@@ -72,6 +72,7 @@ def load_config():
     config.set_var("country_code", "CN")
     config.set_var("auto_direct", True)
     config.set_var("auto_gae", True)
+    config.set_var("enable_fake_ca", True)
     config.set_var("block_advertisement", True)
 
     config.load()
@@ -90,11 +91,13 @@ def run(args):
 
     if "gae_proxy" in proc_handler:
         g.gae_proxy = proc_handler["gae_proxy"]["imp"].local
+        g.gae_proxy_listen_port = g.gae_proxy.config.config.listen_port
     else:
         xlog.debug("gae_proxy not running")
 
     if "x_tunnel" in proc_handler:
         g.x_tunnel = proc_handler["x_tunnel"]["imp"].local
+        g.x_tunnel_socks_port = g.x_tunnel.global_var.config.socks_port
     else:
         xlog.debug("x_tunnel not running")
 

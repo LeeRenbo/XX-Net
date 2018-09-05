@@ -33,7 +33,7 @@ from http2_connection import Http2Worker
 
 
 class HttpsDispatcher(object):
-    idle_time = 20 * 60
+    idle_time = 2 * 60
 
     def __init__(self, logger, config, ip_manager, connection_manager,
                  http1worker=Http1Worker,
@@ -83,6 +83,7 @@ class HttpsDispatcher(object):
 
         threading.Thread(target=self.dispatcher).start()
         threading.Thread(target=self.create_worker_thread).start()
+        threading.Thread(target=self.connection_checker).start()
 
     def stop(self):
         self.running = False
@@ -175,14 +176,14 @@ class HttpsDispatcher(object):
                     (best_worker is None or
                     idle_num < self.config.dispather_min_idle_workers or
                     len(self.workers) < self.config.dispather_min_workers or
-                    (now - best_worker.last_active_time) < self.config.dispather_work_min_idle_time or
+                    (now - best_worker.last_recv_time) < self.config.dispather_work_min_idle_time or
                     best_score > self.config.dispather_work_max_score or
                      (best_worker.version == "2" and len(best_worker.streams) >= self.config.http2_target_concurrent)):
                 # self.logger.debug("trigger get more worker")
                 self.trigger_create_worker_cv.notify()
 
             if nowait or \
-                    (best_worker and (now - best_worker.last_active_time) >= self.config.dispather_work_min_idle_time):
+                    (best_worker and (now - best_worker.last_recv_time) >= self.config.dispather_work_min_idle_time):
                 # self.logger.debug("return worker")
                 return best_worker
 
@@ -241,10 +242,11 @@ class HttpsDispatcher(object):
             self.request_queue.put(task)
 
             response = q.get(timeout=timeout)
-            if response and response.status==200:
+            if response and response.status == 200:
                 self.success_num += 1
                 self.continue_fail_num = 0
             else:
+                self.logger.warn("task %s %s %s timeout", method, host, path)
                 self.fail_num += 1
                 self.continue_fail_num += 1
                 self.last_fail_time = time.time()
@@ -259,6 +261,7 @@ class HttpsDispatcher(object):
         self.fail_num += 1
         self.continue_fail_num += 1
         self.last_fail_time = time.time()
+        self.logger.warn("retry_task_cb: %s", task.url)
 
         if task.responsed:
             self.logger.warn("retry but responsed. %s", task.url)
@@ -325,6 +328,20 @@ class HttpsDispatcher(object):
         self.wait_a_worker_cv.notify()
         self.trigger_create_worker_cv.notify()
 
+    def connection_checker(self):
+        while self.running:
+            now = time.time()
+            try:
+                for worker in list(self.workers):
+                    if worker.version == "1.1":
+                        continue
+
+                    worker.check_active(now)
+            except Exception as e:
+                self.logger.exception("check worker except:%r")
+
+            time.sleep(1)
+
     def is_idle(self):
         return time.time() - self.last_request_time > self.idle_time
 
@@ -340,7 +357,8 @@ class HttpsDispatcher(object):
 
     def close_all_worker(self, reason="close all worker"):
         for w in list(self.workers):
-            w.close(reason)
+            if w.accept_task:
+                w.close(reason)
 
         self.workers = []
         self.h1_num = 0
@@ -411,7 +429,7 @@ class HttpsDispatcher(object):
         for w, r in w_r:
             out_str += "%s score:%d rtt:%d running:%d accept:%d live:%d inactive:%d processed:%d" % \
                        (w.ip, w.get_score(), w.rtt, w.keep_running,  w.accept_task,
-                        (now-w.ssl_sock.create_time), (now-w.last_active_time), w.processed_tasks)
+                        (now-w.ssl_sock.create_time), (now-w.last_recv_time), w.processed_tasks)
             if w.version == "2":
                 out_str += " continue_timeout:%d streams:%d ping_on_way:%d remote_win:%d send_queue:%d\r\n" % \
                    (w.continue_timeout, len(w.streams), w.ping_on_way, w.remote_window_size, w.send_queue.qsize())

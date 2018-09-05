@@ -19,8 +19,11 @@ xlog = getLogger("smart_router")
 SO_ORIGINAL_DST = 80
 
 
-
 fake_host = ""
+
+
+class DontFakeCA(Exception):
+    pass
 
 
 class ConnectFail(Exception):
@@ -252,7 +255,7 @@ def do_unwrap_socks(sock, host, port, client_address, req, left_buf=""):
     try:
         remote_sock = socks.create_connection(
             (host, port),
-            proxy_type="socks5h", proxy_addr="127.0.0.1", proxy_port=1080, timeout=15
+            proxy_type="socks5h", proxy_addr="127.0.0.1", proxy_port=g.x_tunnel_socks_port, timeout=15
         )
     except Exception as e:
         xlog.warn("do_unwrap_socks connect to x-tunnel for %s:%d proxy fail.", host, port)
@@ -291,6 +294,9 @@ def do_gae(sock, host, port, client_address, left_buf=""):
     else:
         leadbyte = sock.recv(1, socket.MSG_PEEK)
         if leadbyte in ('\x80', '\x16'):
+            if host != fake_host and not g.config.enable_fake_ca:
+                raise DontFakeCA()
+
             try:
                 sock._sock = g.gae_proxy.proxy_handler.wrap_ssl(sock._sock, host, port, client_address)
             except Exception as e:
@@ -367,6 +373,8 @@ def try_loop(scense, rule_list, sock, host, port, client_address, left_buf=""):
                     # xlog.info("%s %s:%d try gae", scense, host, port)
                     do_gae(sock, host, port, client_address, left_buf)
                     return
+                except DontFakeCA:
+                    continue
                 except NotSupported as e:
                     req = e.req
                     left_bufs = [req.raw_requestline]
@@ -519,6 +527,12 @@ def handle_domain_proxy(sock, host, port, client_address, left_buf=""):
         try:
             rule_list.remove("direct")
             rule_list.remove("redirect_https")
+        except:
+            pass
+
+    if not g.config.enable_fake_ca and port == 443 and "gae" in rule_list:
+        try:
+            rule_list.remove("gae")
         except:
             pass
 
